@@ -118,6 +118,40 @@ function createLogger() {
   };
 }
 
+function formatTelegramSummary(result) {
+  const lines = [];
+  const runTime = new Date().toISOString().replace("T", " ").replace("Z", " UTC");
+  lines.push(`Crypto Monitor (${CONFIG.lookbackMinutes}m)`);
+  lines.push(`Time: ${runTime}`);
+  lines.push("");
+
+  for (const item of result.tokenReports) {
+    const direction = item.percentChange >= 0 ? "UP" : "DOWN";
+    lines.push(
+      `${item.symbol} | ${direction} ${item.percentChange}% | ${item.currentPrice} USDT`
+    );
+  }
+
+  if (result.errors.length > 0) {
+    lines.push("");
+    lines.push("Errors:");
+    for (const error of result.errors) {
+      lines.push(`- ${error}`);
+    }
+  }
+
+  lines.push("");
+  if (result.lockedTokens.length > 0) {
+    lines.push(
+      `ALERT: ${result.lockedTokens.length} token(s) moved more than ${CONFIG.thresholdPercent}%`
+    );
+  } else {
+    lines.push(`No token moved more than ${CONFIG.thresholdPercent}%`);
+  }
+
+  return lines.join("\n");
+}
+
 async function lockSignificantMoves(lockedTokens) {
   const payload = {
     lockedAt: new Date().toISOString(),
@@ -163,6 +197,8 @@ async function monitorPrices(logger) {
   const lookbackMs = CONFIG.lookbackMinutes * 60 * 1000;
   const targetTimestamp = now - lookbackMs;
   const lockedTokens = [];
+  const tokenReports = [];
+  const errors = [];
   const currentPrices = await fetchCurrentPrices(CONFIG.tokens);
 
   for (const token of CONFIG.tokens) {
@@ -185,6 +221,7 @@ async function monitorPrices(logger) {
         fiveMinutesAgoPrice: roundTo(fiveMinutesAgoPrice),
         percentChange: roundTo(percentChange, 4),
       };
+      tokenReports.push(tokenResult);
 
       logger.info(
         `[${token.name}] ${CONFIG.lookbackMinutes}m change: ${tokenResult.percentChange}% (current: ${tokenResult.currentPrice} USDT)`
@@ -194,7 +231,9 @@ async function monitorPrices(logger) {
         lockedTokens.push(tokenResult);
       }
     } catch (error) {
-      logger.error(`[${token.name}] ${error.message}`);
+      const errorMessage = `[${token.name}] ${error.message}`;
+      errors.push(errorMessage);
+      logger.error(errorMessage);
     }
   }
 
@@ -208,22 +247,29 @@ async function monitorPrices(logger) {
       `No tokens moved more than ${CONFIG.thresholdPercent}% in the last ${CONFIG.lookbackMinutes} minutes.`
     );
   }
+
+  return { tokenReports, lockedTokens, errors };
 }
 
 async function main() {
   const logger = createLogger();
+  let result = null;
 
   try {
-    await monitorPrices(logger);
+    result = await monitorPrices(logger);
   } catch (error) {
     logger.error(`Unexpected error: ${error.message}`);
     process.exitCode = 1;
   }
 
+  if (!result) {
+    return;
+  }
+
   try {
-    await sendTelegramMessage(logger.buildMessage());
+    await sendTelegramMessage(formatTelegramSummary(result));
   } catch (error) {
-    console.error(`Failed to send Telegram notification: ${error.message}`);
+    logger.error(`Failed to send Telegram notification: ${error.message}`);
   }
 }
 
