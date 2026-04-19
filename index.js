@@ -15,17 +15,46 @@ const CONFIG = {
   klineInterval: "1m",
   klineLimit: 10,
   telegramMaxMessageLength: 3900,
+  apiBaseUrls: [
+    "https://api.binance.com",
+    "https://data-api.binance.vision",
+    "https://api1.binance.com",
+  ],
 };
 
-async function fetchCurrentPrices(tokens) {
-  const url = "https://api.binance.com/api/v3/ticker/price";
-  const response = await fetch(url);
+async function fetchJsonWithFallback(pathname) {
+  const errors = [];
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch prices: ${response.status} ${response.statusText}`);
+  for (const baseUrl of CONFIG.apiBaseUrls) {
+    const url = `${baseUrl}${pathname}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        const details = (await response.text()).slice(0, 200);
+        const message = `${baseUrl} returned ${response.status} ${response.statusText}${
+          details ? ` - ${details}` : ""
+        }`;
+        errors.push(message);
+
+        // 451 often means endpoint unavailable in runner region.
+        if (response.status === 451) {
+          continue;
+        }
+        continue;
+      }
+
+      return await response.json();
+    } catch (error) {
+      errors.push(`${baseUrl} request failed: ${error.message}`);
+    }
   }
 
-  const data = await response.json();
+  throw new Error(errors.join(" | "));
+}
+
+async function fetchCurrentPrices(tokens) {
+  const data = await fetchJsonWithFallback("/api/v3/ticker/price");
   if (!Array.isArray(data)) {
     throw new Error("Unexpected Binance ticker response.");
   }
@@ -43,16 +72,9 @@ async function fetchCurrentPrices(tokens) {
 }
 
 async function fetchKlinePriceFiveMinutesAgo(symbol, targetTimestampMs) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${CONFIG.klineInterval}&limit=${CONFIG.klineLimit}`;
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch klines for ${symbol}: ${response.status} ${response.statusText}`
-    );
-  }
-
-  const data = await response.json();
+  const data = await fetchJsonWithFallback(
+    `/api/v3/klines?symbol=${symbol}&interval=${CONFIG.klineInterval}&limit=${CONFIG.klineLimit}`
+  );
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`No kline data for ${symbol}`);
   }
